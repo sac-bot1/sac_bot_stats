@@ -23,8 +23,8 @@ class StatusBot(commands.Bot):
         self.guilds_data = {}
 
     async def setup_hook(self):
-        # Starts the background loop
-        self.check_bot_status.start()
+        # Starts the background loop (check_bot_status is a module-level task, not a method)
+        check_bot_status.start()
         # Syncs slash commands globally
         await self.tree.sync()
 
@@ -76,7 +76,7 @@ async def mode_update(ctx, *, message: str = None):
         await ctx.send("🔄 Global update mode disabled. Switched back to automatic monitoring.")
     
     # Force trigger the status loop immediately so servers don't have to wait 1 minute
-    await bot.check_bot_status()
+    await check_bot_status()
 
 # Error handler for !modeupdate if a non-owner tries to use it
 @mode_update.error
