@@ -130,4 +130,4 @@ async def check_bot_status():
             print(f"Error updating message in guild {guild_id}: {e}")
 
 # Run the bot (Replace with your actual Token)
-bot.run('YOUR_BOT_TOKEN_HERE')
+bot.run('token_bot')
