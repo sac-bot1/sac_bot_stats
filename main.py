@@ -45,12 +45,20 @@ class Database:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS guild_config (
-                    guild_id   INTEGER PRIMARY KEY,
-                    channel_id INTEGER NOT NULL,
-                    message_id INTEGER NOT NULL
+                    guild_id     INTEGER PRIMARY KEY,
+                    channel_id   INTEGER NOT NULL,
+                    message_id   INTEGER NOT NULL,
+                    ping_role_id INTEGER,
+                    ping_user_id INTEGER
                 )
                 """
             )
+            # Migration for databases created before ping columns existed.
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(guild_config)")}
+            if "ping_role_id" not in existing_cols:
+                conn.execute("ALTER TABLE guild_config ADD COLUMN ping_role_id INTEGER")
+            if "ping_user_id" not in existing_cols:
+                conn.execute("ALTER TABLE guild_config ADD COLUMN ping_user_id INTEGER")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS status_history (
@@ -76,17 +84,26 @@ class Database:
             conn.commit()
 
     # --- guild config -----------------------------------------------------
-    def upsert_guild_config(self, guild_id: int, channel_id: int, message_id: int):
+    def upsert_guild_config(
+        self,
+        guild_id: int,
+        channel_id: int,
+        message_id: int,
+        ping_role_id: int | None = None,
+        ping_user_id: int | None = None,
+    ):
         with closing(self._connect()) as conn:
             conn.execute(
                 """
-                INSERT INTO guild_config (guild_id, channel_id, message_id)
-                VALUES (?, ?, ?)
+                INSERT INTO guild_config (guild_id, channel_id, message_id, ping_role_id, ping_user_id)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
-                    channel_id = excluded.channel_id,
-                    message_id = excluded.message_id
+                    channel_id   = excluded.channel_id,
+                    message_id   = excluded.message_id,
+                    ping_role_id = excluded.ping_role_id,
+                    ping_user_id = excluded.ping_user_id
                 """,
-                (guild_id, channel_id, message_id),
+                (guild_id, channel_id, message_id, ping_role_id, ping_user_id),
             )
             conn.commit()
 
@@ -99,22 +116,43 @@ class Database:
     def get_guild_config(self, guild_id: int):
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT channel_id, message_id FROM guild_config WHERE guild_id = ?",
+                "SELECT channel_id, message_id, ping_role_id, ping_user_id "
+                "FROM guild_config WHERE guild_id = ?",
                 (guild_id,),
             ).fetchone()
             if row:
-                return {"channel_id": row[0], "message_id": row[1]}
+                return {
+                    "channel_id": row[0],
+                    "message_id": row[1],
+                    "ping_role_id": row[2],
+                    "ping_user_id": row[3],
+                }
             return None
 
     def get_all_guild_configs(self):
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT guild_id, channel_id, message_id FROM guild_config"
+                "SELECT guild_id, channel_id, message_id, ping_role_id, ping_user_id FROM guild_config"
             ).fetchall()
             return {
-                guild_id: {"channel_id": channel_id, "message_id": message_id}
-                for guild_id, channel_id, message_id in rows
+                guild_id: {
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "ping_role_id": ping_role_id,
+                    "ping_user_id": ping_user_id,
+                }
+                for guild_id, channel_id, message_id, ping_role_id, ping_user_id in rows
             }
+
+    def get_last_status(self, guild_id: int):
+        """Returns the most recently logged status for a guild, or None if there's no history yet."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT status FROM status_history WHERE guild_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (guild_id,),
+            ).fetchone()
+            return row[0] if row else None
 
     # --- status history -----------------------------------------------------
     def log_status(self, guild_id: int, status: str):
@@ -254,11 +292,52 @@ def current_status_label(guild: discord.Guild) -> str:
     return "offline"
 
 
+def build_mention_string(config: dict) -> str | None:
+    """Builds a '<@&role> <@user>' mention string from a guild config, or None if unset."""
+    mentions = []
+    if config.get("ping_role_id"):
+        mentions.append(f"<@&{config['ping_role_id']}>")
+    if config.get("ping_user_id"):
+        mentions.append(f"<@{config['ping_user_id']}>")
+    return " ".join(mentions) if mentions else None
+
+
+TRANSITION_TEXT = {
+    "online": "🟢 **Status changed to Online** — the monitored bot is back up.",
+    "offline": "🔴 **Status changed to Offline** — the monitored bot appears to be down!",
+    "maintenance": "⚠️ **Maintenance mode enabled** for the monitored bot.",
+}
+
+
+async def notify_status_change(channel: discord.abc.Messageable, config: dict, new_status: str):
+    """Sends a separate ping message (if a role/user is configured) when status changes."""
+    mention = build_mention_string(config)
+    text = TRANSITION_TEXT.get(new_status, f"Status changed to **{new_status}**.")
+    if mention:
+        text = f"{mention} {text}"
+    try:
+        await channel.send(
+            text,
+            allowed_mentions=discord.AllowedMentions(everyone=False, roles=True, users=True),
+        )
+    except discord.Forbidden:
+        pass
+
+
 # --- 1. SLASH COMMAND: SETUP CHANNEL ---
 @bot.tree.command(name="setup", description="Set up the channel where the status embed will be updated.")
-@app_commands.describe(channel="The channel where the status will be posted")
+@app_commands.describe(
+    channel="The channel where the status will be posted",
+    ping_role="Optional: role to tag whenever the status changes",
+    ping_user="Optional: user to tag whenever the status changes",
+)
 @app_commands.checks.has_permissions(administrator=True)
-async def setup(interaction: discord.Interaction, channel: discord.TextChannel):
+async def setup(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    ping_role: discord.Role = None,
+    ping_user: discord.Member = None,
+):
     await interaction.response.defer(ephemeral=True)
 
     # Send an initial embed that will be updated by the loop
@@ -266,12 +345,22 @@ async def setup(interaction: discord.Interaction, channel: discord.TextChannel):
     initial_msg = await channel.send(embed=embed)
 
     await asyncio.to_thread(
-        db.upsert_guild_config, interaction.guild.id, channel.id, initial_msg.id
+        db.upsert_guild_config,
+        interaction.guild.id,
+        channel.id,
+        initial_msg.id,
+        ping_role.id if ping_role else None,
+        ping_user.id if ping_user else None,
     )
 
-    await interaction.followup.send(
-        f"✅ Status embed successfully set up in {channel.mention}!", ephemeral=True
-    )
+    confirmation = f"✅ Status embed successfully set up in {channel.mention}!"
+    if ping_role or ping_user:
+        tagged = " and ".join(
+            filter(None, [ping_role.mention if ping_role else None, ping_user.mention if ping_user else None])
+        )
+        confirmation += f"\n{tagged} will be tagged whenever the status changes."
+
+    await interaction.followup.send(confirmation, ephemeral=True)
 
 
 @setup.error
@@ -448,7 +537,13 @@ async def check_bot_status():
             print(f"Error updating message in guild {guild_id}: {e}")
             continue
 
+        last_status = await asyncio.to_thread(db.get_last_status, guild_id)
         await asyncio.to_thread(db.log_status, guild_id, label)
+
+        # Only ping on an actual transition, and never on the very first
+        # sample (last_status is None), to avoid a spurious ping at setup.
+        if last_status is not None and last_status != label:
+            await notify_status_change(channel, data, label)
 
 
 @check_bot_status.before_loop
