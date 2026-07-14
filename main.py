@@ -297,13 +297,24 @@ class StatusBot(commands.Bot):
             db.get_setting, "maintenance_message"
         )
 
-        # Resolve the bot owner (whoever owns the application in the Dev
-        # Portal) and make sure they're auto-subscribed to status DMs, so
-        # they keep getting notified without needing to run /updatestats.
+        # Resolve the bot owner(s). Bots can either have a single owner, or
+        # be owned by a Team (common default nowadays) with several members
+        # who should all count as "owner" for !modeupdate. We mirror exactly
+        # what commands.Bot.is_owner() itself checks, so we don't fight it.
         try:
             app_info = await self.application_info()
-            self.owner_id = app_info.owner.id
-            await asyncio.to_thread(db.add_subscriber, self.owner_id)
+            if app_info.team:
+                self.owner_ids = {member.id for member in app_info.team.members}
+                self.owner_id = None
+            else:
+                self.owner_id = app_info.owner.id
+                self.owner_ids = set()
+
+            # Auto-subscribe every resolved owner to status DMs, so they
+            # keep getting notified without needing to run /updatestats.
+            resolved_owner_ids = self.owner_ids or ({self.owner_id} if self.owner_id else set())
+            for oid in resolved_owner_ids:
+                await asyncio.to_thread(db.add_subscriber, oid)
         except Exception as e:
             print(f"⚠️ Could not resolve application owner: {e}")
 
