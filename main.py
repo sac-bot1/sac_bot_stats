@@ -451,22 +451,34 @@ async def notify_subscribers_of_global_status_change(new_status: str):
     both directions (offline -> online and online -> offline).
     """
     subscriber_ids = await asyncio.to_thread(db.get_all_subscriber_ids)
+    print(f"[status-dm] transition detected -> {new_status}. Subscribers: {subscriber_ids}")
     if not subscriber_ids:
+        print("[status-dm] no subscribers on file — nothing to send. "
+              "Has anyone run /updatestats, and did owner resolution succeed at startup?")
         return
 
     content, embed = build_status_change_dm(new_status)
+    sent, failed = 0, 0
 
     for user_id in subscriber_ids:
         try:
             user = bot.get_user(user_id) or await bot.fetch_user(user_id)
             await user.send(content=content, embed=embed)
+            sent += 1
         except discord.NotFound:
-            continue
+            print(f"[status-dm] user {user_id} not found (bad/stale id) — skipping.")
+            failed += 1
         except discord.Forbidden:
-            # This user has DMs closed / blocked the bot — skip silently.
-            continue
+            # Almost always means: the user doesn't share a server with the
+            # bot anymore, or their Discord privacy settings block DMs from
+            # server members ("Allow direct messages from server members").
+            print(f"[status-dm] Forbidden sending DM to {user_id} — their DMs are closed to the bot.")
+            failed += 1
         except Exception as e:
-            print(f"⚠️ Could not DM subscriber {user_id}: {e}")
+            print(f"[status-dm] unexpected error DMing {user_id}: {e}")
+            failed += 1
+
+    print(f"[status-dm] done: {sent} sent, {failed} failed.")
 
 
 # --- 1. SLASH COMMAND: SETUP CHANNEL ---
@@ -648,7 +660,32 @@ async def updatestats(interaction: discord.Interaction):
         )
 
 
-# --- 6. PREFIX COMMAND: MODE UPDATE (BOT OWNER ONLY) ---
+# --- 6. SLASH COMMAND: TEST DM (ANY USER) ---
+@bot.tree.command(
+    name="testdm",
+    description="Send yourself a test DM to check that alerts can actually reach you.",
+)
+async def testdm(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    content, embed = build_status_change_dm("online")  # harmless sample content
+    try:
+        await interaction.user.send(
+            content="🧪 This is a test — if you can see this, DMs work fine.",
+            embed=embed,
+        )
+        await interaction.followup.send("✅ Sent! Check your DMs.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ Couldn't DM you. This almost always means your Discord privacy setting "
+            "**'Allow direct messages from server members'** is off for a server we share, "
+            "or you no longer share a server with the bot. Turn that on in your Privacy & "
+            "Safety settings (or per-server: right-click the server icon → Privacy Settings) "
+            "and try again.",
+            ephemeral=True,
+        )
+
+
+# --- 7. PREFIX COMMAND: MODE UPDATE (BOT OWNER ONLY) ---
 @bot.command(name="modeupdate")
 @commands.is_owner()  # Strictly restricts this command to the Bot Creator/Owner
 async def mode_update(ctx, *, message: str = None):
@@ -689,8 +726,15 @@ async def check_bot_status():
     # same way here, so a bot flapping back up always triggers a fresh DM.
     if bot.maintenance_message is None:
         global_status = get_target_status_anywhere()
-        if global_status is not None:
+        if global_status is None:
+            print(
+                f"[status-check] target bot {TARGET_BOT_ID} not found in any shared guild's "
+                "member cache yet — no shared server, or members/presence intents aren't "
+                "populated. Nothing to compare."
+            )
+        else:
             previous_global_status = await asyncio.to_thread(db.get_setting, "last_global_status")
+            print(f"[status-check] previous={previous_global_status} current={global_status}")
             if previous_global_status is not None and previous_global_status != global_status:
                 await notify_subscribers_of_global_status_change(global_status)
             if previous_global_status != global_status:
