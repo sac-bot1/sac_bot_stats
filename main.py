@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import closing
 
 # --- CONFIGURATION ---
-TARGET_BOT_ID = 1522192055177318443
+TARGET_BOT_ID = 1509876788875231242
 
 # Path to the SQLite database file. On Railway, attach a Volume (e.g. mounted
 # at /app/data) and set DB_PATH=/app/data/bot_data.db in your environment
@@ -19,7 +19,7 @@ CHECK_INTERVAL_MINUTES = 1
 # How many history rows to keep before pruning old ones (per guild).
 HISTORY_RETENTION_DAYS = 30
 
-# Recommendations sent to the bot owner's DM whenever the monitored bot goes offline.
+# Recommendations sent to subscribers' DMs whenever the monitored bot goes offline.
 OFFLINE_RECOMMENDATIONS = (
     "• Check your hosting dashboard (Railway/VPS/etc.) for crash logs\n"
     "• Verify the process wasn't OOM-killed or hit a CPU/memory limit\n"
@@ -27,6 +27,13 @@ OFFLINE_RECOMMENDATIONS = (
     "• Confirm the bot's token hasn't been reset or revoked\n"
     "• Check whether the host redeployed/restarted the service unexpectedly\n"
     "• Restart the process manually if it isn't set to auto-restart"
+)
+
+# Sent alongside the "back online" DM, so subscribers get a suggestion every time too.
+ONLINE_TIPS = (
+    "• No action needed if you expected this (manual restart, redeploy, etc.)\n"
+    "• If this was unexpected, check the crash logs from just before it recovered\n"
+    "• Worth keeping an eye on it for a bit in case it's flapping (going up/down repeatedly)"
 )
 
 
@@ -84,6 +91,14 @@ class Database:
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     key   TEXT PRIMARY KEY,
                     value TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS status_subscribers (
+                    user_id       INTEGER PRIMARY KEY,
+                    subscribed_at TEXT NOT NULL
                 )
                 """
             )
@@ -225,6 +240,35 @@ class Database:
             ).fetchone()
             return row[0] if row else None
 
+    # --- status change subscribers -----------------------------------------------------
+    def is_subscribed(self, user_id: int) -> bool:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM status_subscribers WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return row is not None
+
+    def add_subscriber(self, user_id: int):
+        with closing(self._connect()) as conn:
+            conn.execute(
+                """
+                INSERT INTO status_subscribers (user_id, subscribed_at) VALUES (?, ?)
+                ON CONFLICT(user_id) DO NOTHING
+                """,
+                (user_id, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+    def remove_subscriber(self, user_id: int):
+        with closing(self._connect()) as conn:
+            conn.execute("DELETE FROM status_subscribers WHERE user_id = ?", (user_id,))
+            conn.commit()
+
+    def get_all_subscriber_ids(self):
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT user_id FROM status_subscribers").fetchall()
+            return [row[0] for row in rows]
+
 
 db = Database(DB_PATH)
 
@@ -254,10 +298,12 @@ class StatusBot(commands.Bot):
         )
 
         # Resolve the bot owner (whoever owns the application in the Dev
-        # Portal) so we know who to DM on offline/online transitions.
+        # Portal) and make sure they're auto-subscribed to status DMs, so
+        # they keep getting notified without needing to run /updatestats.
         try:
             app_info = await self.application_info()
             self.owner_id = app_info.owner.id
+            await asyncio.to_thread(db.add_subscriber, self.owner_id)
         except Exception as e:
             print(f"⚠️ Could not resolve application owner: {e}")
 
@@ -360,22 +406,8 @@ async def notify_status_change(channel: discord.abc.Messageable, config: dict, n
         pass
 
 
-async def notify_owner_of_global_status_change(new_status: str):
-    """
-    DMs the bot application owner whenever the *monitored* bot's real
-    presence flips between online/offline (independent of maintenance mode
-    and independent of any single guild's setup). Offline DMs include a
-    short checklist of things to look at.
-    """
-    owner_id = bot.owner_id
-    if not owner_id:
-        return
-
-    try:
-        owner = bot.get_user(owner_id) or await bot.fetch_user(owner_id)
-    except discord.NotFound:
-        return
-
+def build_status_change_dm(new_status: str) -> tuple[str, discord.Embed]:
+    """Builds the (content, embed) pair sent to every subscriber on a status flip."""
     if new_status == "offline":
         embed = discord.Embed(
             title="🔴 Monitored bot just went OFFLINE",
@@ -384,7 +416,7 @@ async def notify_owner_of_global_status_change(new_status: str):
             timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Recommended steps", value=OFFLINE_RECOMMENDATIONS, inline=False)
-        content = "⚠️ **Ping:** your monitored bot appears to be down."
+        content = "⚠️ **Ping:** the monitored bot appears to be down."
     else:
         embed = discord.Embed(
             title="🟢 Monitored bot is back ONLINE",
@@ -392,13 +424,38 @@ async def notify_owner_of_global_status_change(new_status: str):
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow(),
         )
-        content = "✅ Your monitored bot is back online."
+        embed.add_field(name="Suggested next steps", value=ONLINE_TIPS, inline=False)
+        content = "✅ **Ping:** the monitored bot is back online."
 
-    try:
-        await owner.send(content=content, embed=embed)
-    except discord.Forbidden:
-        # Owner has DMs disabled / blocked the bot — nothing else we can do.
-        print("⚠️ Could not DM the bot owner (DMs closed or blocked).")
+    embed.set_footer(text="Use /updatestats anytime to stop these alerts")
+    return content, embed
+
+
+async def notify_subscribers_of_global_status_change(new_status: str):
+    """
+    DMs every subscribed user (anyone who ran /updatestats, plus the bot
+    owner by default) whenever the *monitored* bot's real presence flips
+    between online/offline. This fires independent of maintenance mode and
+    independent of any single guild's /setup, and it fires the same way in
+    both directions (offline -> online and online -> offline).
+    """
+    subscriber_ids = await asyncio.to_thread(db.get_all_subscriber_ids)
+    if not subscriber_ids:
+        return
+
+    content, embed = build_status_change_dm(new_status)
+
+    for user_id in subscriber_ids:
+        try:
+            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+            await user.send(content=content, embed=embed)
+        except discord.NotFound:
+            continue
+        except discord.Forbidden:
+            # This user has DMs closed / blocked the bot — skip silently.
+            continue
+        except Exception as e:
+            print(f"⚠️ Could not DM subscriber {user_id}: {e}")
 
 
 # --- 1. SLASH COMMAND: SETUP CHANNEL ---
@@ -552,7 +609,35 @@ async def uptime(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-# --- 5. PREFIX COMMAND: MODE UPDATE (BOT OWNER ONLY) ---
+# --- 5. SLASH COMMAND: SUBSCRIBE / UNSUBSCRIBE TO STATUS DMs (ANY USER) ---
+@bot.tree.command(
+    name="updatestats",
+    description="Toggle DM alerts for you whenever the tracked bot's status changes.",
+)
+async def updatestats(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    user_id = interaction.user.id
+    already_subscribed = await asyncio.to_thread(db.is_subscribed, user_id)
+
+    if already_subscribed:
+        await asyncio.to_thread(db.remove_subscriber, user_id)
+        await interaction.followup.send(
+            "🔕 You're unsubscribed. You won't get DMs about status changes anymore. "
+            "Run `/updatestats` again anytime to re-subscribe.",
+            ephemeral=True,
+        )
+    else:
+        await asyncio.to_thread(db.add_subscriber, user_id)
+        await interaction.followup.send(
+            "🔔 You're subscribed! I'll DM you whenever the tracked bot goes online or "
+            "offline, along with a few suggestions on what to do about it. Make sure your "
+            "DMs are open to receive them. Run `/updatestats` again anytime to unsubscribe.",
+            ephemeral=True,
+        )
+
+
+# --- 6. PREFIX COMMAND: MODE UPDATE (BOT OWNER ONLY) ---
 @bot.command(name="modeupdate")
 @commands.is_owner()  # Strictly restricts this command to the Bot Creator/Owner
 async def mode_update(ctx, *, message: str = None):
@@ -586,15 +671,17 @@ async def mode_update_error(ctx, error):
 @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
 async def check_bot_status():
     # --- Global (guild-independent) online/offline tracking -------------
-    # This drives the owner DM below and is separate from the per-guild
+    # This drives the subscriber DMs below and is separate from the per-guild
     # embeds/pings, so it still fires even for guilds that haven't run
     # /setup, and won't fire spuriously while maintenance mode is on.
+    # Both directions (offline->online and online->offline) are handled the
+    # same way here, so a bot flapping back up always triggers a fresh DM.
     if bot.maintenance_message is None:
         global_status = get_target_status_anywhere()
         if global_status is not None:
             previous_global_status = await asyncio.to_thread(db.get_setting, "last_global_status")
             if previous_global_status is not None and previous_global_status != global_status:
-                await notify_owner_of_global_status_change(global_status)
+                await notify_subscribers_of_global_status_change(global_status)
             if previous_global_status != global_status:
                 await asyncio.to_thread(db.set_setting, "last_global_status", global_status)
 
