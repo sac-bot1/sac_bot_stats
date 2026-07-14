@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import closing
 
 # --- CONFIGURATION ---
-TARGET_BOT_ID = 1509876788875231242
+TARGET_BOT_ID = 1522192055177318443
 
 # Path to the SQLite database file. On Railway, attach a Volume (e.g. mounted
 # at /app/data) and set DB_PATH=/app/data/bot_data.db in your environment
