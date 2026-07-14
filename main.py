@@ -19,6 +19,16 @@ CHECK_INTERVAL_MINUTES = 1
 # How many history rows to keep before pruning old ones (per guild).
 HISTORY_RETENTION_DAYS = 30
 
+# Recommendations sent to the bot owner's DM whenever the monitored bot goes offline.
+OFFLINE_RECOMMENDATIONS = (
+    "• Check your hosting dashboard (Railway/VPS/etc.) for crash logs\n"
+    "• Verify the process wasn't OOM-killed or hit a CPU/memory limit\n"
+    "• Check the Discord API status page: https://discordstatus.com\n"
+    "• Confirm the bot's token hasn't been reset or revoked\n"
+    "• Check whether the host redeployed/restarted the service unexpectedly\n"
+    "• Restart the process manually if it isn't set to auto-restart"
+)
+
 
 # =========================================================================
 # DATABASE LAYER
@@ -233,11 +243,23 @@ class StatusBot(commands.Bot):
         # Loaded from the database at startup so it survives restarts.
         self.maintenance_message = None
 
+        # Cached owner id, used to DM whoever owns the bot application when
+        # the monitored bot's global status flips. Populated in setup_hook.
+        self.owner_id = None
+
     async def setup_hook(self):
         # Restore persisted maintenance message, if any.
         self.maintenance_message = await asyncio.to_thread(
             db.get_setting, "maintenance_message"
         )
+
+        # Resolve the bot owner (whoever owns the application in the Dev
+        # Portal) so we know who to DM on offline/online transitions.
+        try:
+            app_info = await self.application_info()
+            self.owner_id = app_info.owner.id
+        except Exception as e:
+            print(f"⚠️ Could not resolve application owner: {e}")
 
         # Starts the background loop (check_bot_status is a module-level task, not a method)
         check_bot_status.start()
@@ -292,6 +314,20 @@ def current_status_label(guild: discord.Guild) -> str:
     return "offline"
 
 
+def get_target_status_anywhere() -> str | None:
+    """
+    Looks for TARGET_BOT_ID across every guild this bot shares with it and
+    returns a single 'online' / 'offline' label, independent of any one
+    guild's config. Returns None if the target bot isn't visible in any
+    shared guild yet (e.g. right after startup, before caches populate).
+    """
+    for guild in bot.guilds:
+        member = guild.get_member(TARGET_BOT_ID)
+        if member:
+            return "online" if member.status != discord.Status.offline else "offline"
+    return None
+
+
 def build_mention_string(config: dict) -> str | None:
     """Builds a '<@&role> <@user>' mention string from a guild config, or None if unset."""
     mentions = []
@@ -322,6 +358,47 @@ async def notify_status_change(channel: discord.abc.Messageable, config: dict, n
         )
     except discord.Forbidden:
         pass
+
+
+async def notify_owner_of_global_status_change(new_status: str):
+    """
+    DMs the bot application owner whenever the *monitored* bot's real
+    presence flips between online/offline (independent of maintenance mode
+    and independent of any single guild's setup). Offline DMs include a
+    short checklist of things to look at.
+    """
+    owner_id = bot.owner_id
+    if not owner_id:
+        return
+
+    try:
+        owner = bot.get_user(owner_id) or await bot.fetch_user(owner_id)
+    except discord.NotFound:
+        return
+
+    if new_status == "offline":
+        embed = discord.Embed(
+            title="🔴 Monitored bot just went OFFLINE",
+            description="The bot you're tracking dropped offline. Here's what to check:",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Recommended steps", value=OFFLINE_RECOMMENDATIONS, inline=False)
+        content = "⚠️ **Ping:** your monitored bot appears to be down."
+    else:
+        embed = discord.Embed(
+            title="🟢 Monitored bot is back ONLINE",
+            description="The bot you're tracking has recovered and is showing an online presence again.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        content = "✅ Your monitored bot is back online."
+
+    try:
+        await owner.send(content=content, embed=embed)
+    except discord.Forbidden:
+        # Owner has DMs disabled / blocked the bot — nothing else we can do.
+        print("⚠️ Could not DM the bot owner (DMs closed or blocked).")
 
 
 # --- 1. SLASH COMMAND: SETUP CHANNEL ---
@@ -508,6 +585,19 @@ async def mode_update_error(ctx, error):
 # =========================================================================
 @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
 async def check_bot_status():
+    # --- Global (guild-independent) online/offline tracking -------------
+    # This drives the owner DM below and is separate from the per-guild
+    # embeds/pings, so it still fires even for guilds that haven't run
+    # /setup, and won't fire spuriously while maintenance mode is on.
+    if bot.maintenance_message is None:
+        global_status = get_target_status_anywhere()
+        if global_status is not None:
+            previous_global_status = await asyncio.to_thread(db.get_setting, "last_global_status")
+            if previous_global_status is not None and previous_global_status != global_status:
+                await notify_owner_of_global_status_change(global_status)
+            if previous_global_status != global_status:
+                await asyncio.to_thread(db.set_setting, "last_global_status", global_status)
+
     configs = await asyncio.to_thread(db.get_all_guild_configs)
 
     for guild_id, data in list(configs.items()):
