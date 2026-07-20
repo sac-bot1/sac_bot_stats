@@ -345,7 +345,7 @@ def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
     embed = discord.Embed(timestamp=now)
     
     # Add countdown timer to footer showing time until next update
-    next_update = now + datetime.timedelta(minutes=CHECK_INTERVAL_MINUTES)
+    next_update = now + timedelta(minutes=CHECK_INTERVAL_MINUTES)
     next_update_unix = int(next_update.timestamp())
     embed.set_footer(text=f"Next update in • <t:{next_update_unix}:R> • <t:{next_update_unix}:t>")
 
