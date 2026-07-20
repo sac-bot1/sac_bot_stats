@@ -344,14 +344,13 @@ def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
     now = discord.utils.utcnow()
     embed = discord.Embed(timestamp=now)
     
-    # Add countdown timer to footer showing time until next update
+    # Add countdown timer showing time until next update
     next_update = now + timedelta(minutes=CHECK_INTERVAL_MINUTES)
     next_update_unix = int(next_update.timestamp())
-    embed.set_footer(text=f"Next update in • <t:{next_update_unix}:R> • <t:{next_update_unix}:t>")
-
+    
     if bot.maintenance_message is not None:
         embed.title = "⚠️ System Update Notice"
-        embed.description = bot.maintenance_message
+        embed.description = f"{bot.maintenance_message}\n\nNext update in <t:{next_update_unix}:R> at <t:{next_update_unix}:t>"
         # Use update_mode to determine color
         if bot.update_mode == "yellow":
             embed.color = discord.Color.gold()
@@ -373,6 +372,8 @@ def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
 
     if uptime_24h is not None:
         embed.add_field(name="Uptime (24h)", value=f"{uptime_24h}%", inline=True)
+    
+    embed.add_field(name="Next update", value=f"<t:{next_update_unix}:R> at <t:{next_update_unix}:t>", inline=True)
 
     return embed
 
