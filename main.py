@@ -381,10 +381,14 @@ def current_status_label(guild: discord.Guild) -> str:
     """Returns 'online' / 'offline' / 'maintenance' for history logging."""
     if bot.maintenance_message is not None:
         return "maintenance"
+    
     target_member = guild.get_member(TARGET_BOT_ID)
-    if target_member and target_member.status != discord.Status.offline:
-        return "online"
-    return "offline"
+    if target_member:
+        print(f"[status-label] Found target bot {TARGET_BOT_ID} in guild {guild.id}, status: {target_member.status}")
+        return "online" if target_member.status != discord.Status.offline else "offline"
+    else:
+        print(f"[status-label] Target bot {TARGET_BOT_ID} not found in guild {guild.id}")
+        return "offline"  # Default to offline if not found
 
 
 def get_target_status_anywhere() -> str | None:
@@ -539,8 +543,16 @@ async def setup(
     await interaction.followup.send(confirmation, ephemeral=True)
 
     # Force trigger the status loop immediately so the embed updates right away
+    print(f"[setup] Forcing immediate status check for guild {interaction.guild.id}")
     await asyncio.sleep(2)  # Small delay to ensure config is saved
-    await check_bot_status()
+    
+    try:
+        await check_bot_status()
+        print(f"[setup] Status check completed")
+    except Exception as e:
+        print(f"[setup] Error during forced status check: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @setup.error
