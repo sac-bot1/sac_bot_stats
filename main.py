@@ -286,6 +286,7 @@ class StatusBot(commands.Bot):
 
         # Loaded from the database at startup so it survives restarts.
         self.maintenance_message = None
+        self.update_mode = "green"  # Track current mode: green, yellow, red
 
         # Cached owner id, used to DM whoever owns the bot application when
         # the monitored bot's global status flips. Populated in setup_hook.
@@ -296,6 +297,10 @@ class StatusBot(commands.Bot):
         self.maintenance_message = await asyncio.to_thread(
             db.get_setting, "maintenance_message"
         )
+        # Restore persisted update mode, if any.
+        self.update_mode = await asyncio.to_thread(
+            db.get_setting, "update_mode"
+        ) or "green"
 
         # Resolve the bot owner(s). Bots can either have a single owner, or
         # be owned by a Team (common default nowadays) with several members
@@ -342,7 +347,13 @@ def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
     if bot.maintenance_message is not None:
         embed.title = "⚠️ System Update Notice"
         embed.description = bot.maintenance_message
-        embed.color = discord.Color.red()
+        # Use update_mode to determine color
+        if bot.update_mode == "yellow":
+            embed.color = discord.Color.gold()
+        elif bot.update_mode == "red":
+            embed.color = discord.Color.red()
+        else:
+            embed.color = discord.Color.gold()
     else:
         target_member = guild.get_member(TARGET_BOT_ID)
 
@@ -509,6 +520,13 @@ async def setup(
         ping_role.id if ping_role else None,
         ping_user.id if ping_user else None,
     )
+
+    # Immediately run a status check to update the embed right away
+    label = current_status_label(interaction.guild)
+    uptime_24h, _ = await asyncio.to_thread(db.get_uptime_stats, interaction.guild.id, 24)
+    status_embed = build_status_embed(interaction.guild, uptime_24h=uptime_24h)
+    await initial_msg.edit(embed=status_embed)
+    await asyncio.to_thread(db.log_status, interaction.guild.id, label)
 
     confirmation = f"✅ Status embed successfully set up in {channel.mention}!"
     if ping_role or ping_user:
@@ -691,17 +709,69 @@ async def testdm(interaction: discord.Interaction):
 async def mode_update(ctx, *, message: str = None):
     """
     Allows the Bot Owner to override the automatic check with a custom global message.
-    Usage: !modeupdate <your message>
-    To reset: !modeupdate
+    Usage: 
+    - !modeupdate on - Enable update mode with default yellow message and 10 min timer
+    - !modeupdate <text> - Enable maintenance mode with red message
+    - !modeupdate - Disable and return to normal green mode
     """
     if message:
-        bot.maintenance_message = message
-        await asyncio.to_thread(db.set_setting, "maintenance_message", message)
-        await ctx.send(f"⚠️ Global update mode enabled. Message sent to all servers:\n> {message}")
+        if message.lower() == "on":
+            # Default update message - yellow with timer
+            bot.maintenance_message = "Update in progress - will return in 10 minutes"
+            bot.update_mode = "yellow"  # Track mode for color
+            await asyncio.to_thread(db.set_setting, "maintenance_message", bot.maintenance_message)
+            await asyncio.to_thread(db.set_setting, "update_mode", "yellow")
+            
+            # Send ping message
+            configs = await asyncio.to_thread(db.get_all_guild_configs)
+            for guild_id, data in configs.items():
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    channel = guild.get_channel(data["channel_id"])
+                    if channel:
+                        try:
+                            mention = build_mention_string(data)
+                            if mention:
+                                await channel.send(
+                                    f"{mention} ⚠️ **Update mode enabled** - Bot will return in 10 minutes",
+                                    allowed_mentions=discord.AllowedMentions(everyone=False, roles=True, users=True),
+                                )
+                        except:
+                            pass
+            
+            await ctx.send(f"⚠️ **Update mode enabled (Yellow)** - Timer started for 10 minutes. Status will show yellow with message:\n> {bot.maintenance_message}")
+        else:
+            # Custom message - red maintenance mode
+            bot.maintenance_message = message
+            bot.update_mode = "red"  # Track mode for color
+            await asyncio.to_thread(db.set_setting, "maintenance_message", message)
+            await asyncio.to_thread(db.set_setting, "update_mode", "red")
+            
+            # Send ping message
+            configs = await asyncio.to_thread(db.get_all_guild_configs)
+            for guild_id, data in configs.items():
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    channel = guild.get_channel(data["channel_id"])
+                    if channel:
+                        try:
+                            mention = build_mention_string(data)
+                            if mention:
+                                await channel.send(
+                                    f"{mention} ⚠️ **Maintenance mode enabled** - {message}",
+                                    allowed_mentions=discord.AllowedMentions(everyone=False, roles=True, users=True),
+                                )
+                        except:
+                            pass
+            
+            await ctx.send(f"⚠️ **Maintenance mode enabled (Red)** - Message sent to all servers:\n> {message}")
     else:
+        # Disable - return to normal green mode
         bot.maintenance_message = None
+        bot.update_mode = "green"
         await asyncio.to_thread(db.set_setting, "maintenance_message", None)
-        await ctx.send("🔄 Global update mode disabled. Switched back to automatic monitoring.")
+        await asyncio.to_thread(db.set_setting, "update_mode", "green")
+        await ctx.send("🔄 **Normal mode enabled (Green)** - Switched back to automatic monitoring.")
 
     # Force trigger the status loop immediately so servers don't have to wait 1 minute
     await check_bot_status()
