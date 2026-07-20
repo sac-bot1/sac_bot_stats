@@ -527,11 +527,21 @@ async def setup(
     )
 
     # Immediately run a status check to update the embed right away
-    label = current_status_label(interaction.guild)
-    uptime_24h, _ = await asyncio.to_thread(db.get_uptime_stats, interaction.guild.id, 24)
-    status_embed = build_status_embed(interaction.guild, uptime_24h=uptime_24h)
-    await initial_msg.edit(embed=status_embed)
-    await asyncio.to_thread(db.log_status, interaction.guild.id, label)
+    try:
+        label = current_status_label(interaction.guild)
+        uptime_24h, _ = await asyncio.to_thread(db.get_uptime_stats, interaction.guild.id, 24)
+        status_embed = build_status_embed(interaction.guild, uptime_24h=uptime_24h)
+        await initial_msg.edit(embed=status_embed)
+        await asyncio.to_thread(db.log_status, interaction.guild.id, label)
+    except Exception as e:
+        print(f"Error during initial status check in setup: {e}")
+        # If status check fails, at least update to show it's set up
+        fallback_embed = discord.Embed(
+            title="🔄 Status Monitor Set Up",
+            description="Status monitoring is active. First check in progress...",
+            color=discord.Color.orange()
+        )
+        await initial_msg.edit(embed=fallback_embed)
 
     confirmation = f"✅ Status embed successfully set up in {channel.mention}!"
     if ping_role or ping_user:
@@ -793,6 +803,8 @@ async def mode_update_error(ctx, error):
 # =========================================================================
 @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
 async def check_bot_status():
+    print(f"[status-check] Starting status check loop...")
+    
     # --- Global (guild-independent) online/offline tracking -------------
     # This drives the subscriber DMs below and is separate from the per-guild
     # embeds/pings, so it still fires even for guilds that haven't run
@@ -816,14 +828,17 @@ async def check_bot_status():
                 await asyncio.to_thread(db.set_setting, "last_global_status", global_status)
 
     configs = await asyncio.to_thread(db.get_all_guild_configs)
+    print(f"[status-check] Processing {len(configs)} guild configs")
 
     for guild_id, data in list(configs.items()):
         guild = bot.get_guild(guild_id)
         if not guild:
+            print(f"[status-check] Guild {guild_id} not found, skipping")
             continue
 
         channel = guild.get_channel(data["channel_id"])
         if not channel:
+            print(f"[status-check] Channel {data['channel_id']} not found in guild {guild_id}, skipping")
             continue
 
         try:
@@ -831,17 +846,22 @@ async def check_bot_status():
         except discord.NotFound:
             # The embed message was deleted out from under us — clean up
             # the stale config instead of retrying forever.
+            print(f"[status-check] Message {data['message_id']} not found, removing config for guild {guild_id}")
             await asyncio.to_thread(db.remove_guild_config, guild_id)
             continue
-
-        label = current_status_label(guild)
-        uptime_24h, _ = await asyncio.to_thread(db.get_uptime_stats, guild_id, 24)
-        embed = build_status_embed(guild, uptime_24h=uptime_24h)
+        except Exception as e:
+            print(f"[status-check] Error fetching message in guild {guild_id}: {e}")
+            continue
 
         try:
+            label = current_status_label(guild)
+            uptime_24h, _ = await asyncio.to_thread(db.get_uptime_stats, guild_id, 24)
+            embed = build_status_embed(guild, uptime_24h=uptime_24h)
+            
             await message.edit(embed=embed)
+            print(f"[status-check] Updated message in guild {guild_id}")
         except Exception as e:
-            print(f"Error updating message in guild {guild_id}: {e}")
+            print(f"[status-check] Error building/editing embed in guild {guild_id}: {e}")
             continue
 
         last_status = await asyncio.to_thread(db.get_last_status, guild_id)
@@ -851,6 +871,8 @@ async def check_bot_status():
         # sample (last_status is None), to avoid a spurious ping at setup.
         if last_status is not None and last_status != label:
             await notify_status_change(channel, data, label)
+    
+    print(f"[status-check] Status check loop completed")
 
 
 @check_bot_status.before_loop
