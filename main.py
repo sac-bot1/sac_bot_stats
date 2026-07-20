@@ -538,6 +538,10 @@ async def setup(
 
     await interaction.followup.send(confirmation, ephemeral=True)
 
+    # Force trigger the status loop immediately so the embed updates right away
+    await asyncio.sleep(2)  # Small delay to ensure config is saved
+    await check_bot_status()
+
 
 @setup.error
 async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -848,6 +852,8 @@ async def check_bot_status():
             print(f"[status-check] Updated message in guild {guild_id}")
         except Exception as e:
             print(f"[status-check] Error building/editing embed in guild {guild_id}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
         last_status = await asyncio.to_thread(db.get_last_status, guild_id)
