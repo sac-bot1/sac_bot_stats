@@ -514,7 +514,7 @@ async def setup(
     await interaction.response.defer(ephemeral=True)
 
     # Send an initial embed that will be updated by the loop
-    embed = discord.Embed(title="🔄 Checking Status...", color=discord.Color.orange())
+    embed = discord.Embed(title="🔄 Status Monitor Set Up", description="Status monitoring is active. First check in progress...", color=discord.Color.orange())
     initial_msg = await channel.send(embed=embed)
 
     await asyncio.to_thread(
@@ -526,22 +526,8 @@ async def setup(
         ping_user.id if ping_user else None,
     )
 
-    # Immediately run a status check to update the embed right away
-    try:
-        label = current_status_label(interaction.guild)
-        uptime_24h, _ = await asyncio.to_thread(db.get_uptime_stats, interaction.guild.id, 24)
-        status_embed = build_status_embed(interaction.guild, uptime_24h=uptime_24h)
-        await initial_msg.edit(embed=status_embed)
-        await asyncio.to_thread(db.log_status, interaction.guild.id, label)
-    except Exception as e:
-        print(f"Error during initial status check in setup: {e}")
-        # If status check fails, at least update to show it's set up
-        fallback_embed = discord.Embed(
-            title="🔄 Status Monitor Set Up",
-            description="Status monitoring is active. First check in progress...",
-            color=discord.Color.orange()
-        )
-        await initial_msg.edit(embed=fallback_embed)
+    # The background task will update the embed within 1 minute
+    # We don't force an immediate check to avoid errors if the target bot isn't cached yet
 
     confirmation = f"✅ Status embed successfully set up in {channel.mention}!"
     if ping_role or ping_user:
