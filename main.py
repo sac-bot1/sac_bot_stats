@@ -344,9 +344,10 @@ def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
     now = discord.utils.utcnow()
     embed = discord.Embed(timestamp=now)
     
-    # Add Discord timestamp to footer that updates dynamically
-    timestamp_unix = int(now.timestamp())
-    embed.set_footer(text=f"Last Updated • <t:{timestamp_unix}:R>")
+    # Add countdown timer to footer showing time until next update
+    next_update = now + datetime.timedelta(minutes=CHECK_INTERVAL_MINUTES)
+    next_update_unix = int(next_update.timestamp())
+    embed.set_footer(text=f"Next update in • <t:{next_update_unix}:R> • <t:{next_update_unix}:t>")
 
     if bot.maintenance_message is not None:
         embed.title = "⚠️ System Update Notice"
