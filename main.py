@@ -341,8 +341,12 @@ async def on_ready():
 
 def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
     """Builds the embed shown in the tracked status channel."""
-    embed = discord.Embed(timestamp=discord.utils.utcnow())
-    embed.set_footer(text="Last Updated")
+    now = discord.utils.utcnow()
+    embed = discord.Embed(timestamp=now)
+    
+    # Add Discord timestamp to footer that updates dynamically
+    timestamp_unix = int(now.timestamp())
+    embed.set_footer(text=f"Last Updated • <t:{timestamp_unix}:R>")
 
     if bot.maintenance_message is not None:
         embed.title = "⚠️ System Update Notice"
