@@ -767,7 +767,7 @@ async def updatestats(interaction: discord.Interaction):
         await interaction.followup.send(
             "🔕 You're unsubscribed. You won't get DMs about status changes anymore. "
             "Run `/updatestats` again anytime to re-subscribe.",
-            ephemeral=True,
+            ephemeral=True
         )
     else:
         await asyncio.to_thread(db.add_subscriber, user_id)
@@ -775,7 +775,7 @@ async def updatestats(interaction: discord.Interaction):
             "🔔 You're subscribed! I'll DM you whenever the tracked bot goes online or "
             "offline, along with a few suggestions on what to do about it. Make sure your "
             "DMs are open to receive them. Run `/updatestats` again anytime to unsubscribe.",
-            ephemeral=True,
+            ephemeral=True
         )
 
 
@@ -800,7 +800,7 @@ async def testdm(interaction: discord.Interaction):
             "or you no longer share a server with the bot. Turn that on in your Privacy & "
             "Safety settings (or per-server: right-click the server icon → Privacy Settings) "
             "and try again.",
-            ephemeral=True,
+            ephemeral=True
         )
 
 
