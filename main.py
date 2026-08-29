@@ -29,6 +29,31 @@ OFFLINE_RECOMMENDATIONS = (
     "• Restart the process manually if it isn't set to auto-restart"
 )
 
+# Enhanced tips for users when bot is offline
+ADMIN_TIPS_OFFLINE = (
+    "🔧 **What to do when the bot is offline?**\n\n"
+    "1. **Check the hosting platform:**\n"
+    "   - Log into your hosting dashboard (Railway/VPS/etc.)\n"
+    "   - Look for crash logs or error messages\n"
+    "   - Check if there are memory or CPU limit issues\n\n"
+    "2. **How to stop the server:**\n"
+    "   - On Railway: Click 'Stop' in the project\n"
+    "   - On VPS: Use command `sudo systemctl stop <service-name>`\n"
+    "   - Or Ctrl+C if running manually\n\n"
+    "3. **What to update:**\n"
+    "   - Update library versions\n"
+    "   - Check for security updates\n"
+    "   - Clear cache and temporary files\n\n"
+    "4. **How to restart:**\n"
+    "   - On Railway: Click 'Redeploy'\n"
+    "   - On VPS: `sudo systemctl restart <service-name>`\n"
+    "   - Or run the script again\n\n"
+    "5. **Basic checks:**\n"
+    "   - Verify the bot token is valid\n"
+    "   - Ensure the bot is on the correct server\n"
+    "   - Check intent settings"
+)
+
 # Sent alongside the "back online" DM, so subscribers get a suggestion every time too.
 ONLINE_TIPS = (
     "• No action needed if you expected this (manual restart, redeploy, etc.)\n"
@@ -99,6 +124,16 @@ class Database:
                 CREATE TABLE IF NOT EXISTS status_subscribers (
                     user_id       INTEGER PRIMARY KEY,
                     subscribed_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_permissions (
+                    user_id      INTEGER PRIMARY KEY,
+                    guild_id     INTEGER NOT NULL,
+                    granted_at   TEXT NOT NULL,
+                    UNIQUE(user_id, guild_id)
                 )
                 """
             )
@@ -269,6 +304,46 @@ class Database:
             rows = conn.execute("SELECT user_id FROM status_subscribers").fetchall()
             return [row[0] for row in rows]
 
+    # --- user permissions (per-user setup tracking) ---------------------------
+    def grant_user_permission(self, user_id: int, guild_id: int):
+        """Grant a specific user permission to manage status tracking in their guild."""
+        with closing(self._connect()) as conn:
+            conn.execute(
+                """
+                INSERT INTO user_permissions (user_id, guild_id, granted_at) VALUES (?, ?, ?)
+                ON CONFLICT(user_id, guild_id) DO UPDATE SET granted_at = excluded.granted_at
+                """,
+                (user_id, guild_id, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+    def revoke_user_permission(self, user_id: int, guild_id: int):
+        """Revoke a user's permission to manage status tracking in their guild."""
+        with closing(self._connect()) as conn:
+            conn.execute(
+                "DELETE FROM user_permissions WHERE user_id = ? AND guild_id = ?",
+                (user_id, guild_id),
+            )
+            conn.commit()
+
+    def has_user_permission(self, user_id: int, guild_id: int) -> bool:
+        """Check if a specific user has permission to manage status tracking in their guild."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM user_permissions WHERE user_id = ? AND guild_id = ?",
+                (user_id, guild_id),
+            ).fetchone()
+            return row is not None
+
+    def get_user_guild_permissions(self, user_id: int):
+        """Get all guilds where a user has permission to manage status tracking."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT guild_id FROM user_permissions WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            return [row[0] for row in rows]
+
 
 db = Database(DB_PATH)
 
@@ -339,7 +414,7 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user.name}")
 
 
-def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
+def build_status_embed(guild: discord.Guild, uptime_24h=None, show_admin_tips=False) -> discord.Embed:
     """Builds the embed shown in the tracked status channel."""
     now = discord.utils.utcnow()
     embed = discord.Embed(timestamp=now)
@@ -369,6 +444,10 @@ def build_status_embed(guild: discord.Guild, uptime_24h=None) -> discord.Embed:
             embed.title = "🔴 Bot is Offline"
             embed.description = "The bot is currently down or experiencing issues."
             embed.color = discord.Color.dark_red()
+            
+            # Add admin tips when bot is offline and requested
+            if show_admin_tips:
+                embed.add_field(name="🔧 טיפים לניהול", value=ADMIN_TIPS_OFFLINE, inline=False)
 
     if uptime_24h is not None:
         embed.add_field(name="Uptime (24h)", value=f"{uptime_24h}%", inline=True)
@@ -448,6 +527,7 @@ def build_status_change_dm(new_status: str) -> tuple[str, discord.Embed]:
             timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Recommended steps", value=OFFLINE_RECOMMENDATIONS, inline=False)
+        embed.add_field(name="🔧 טיפים לניהול", value=ADMIN_TIPS_OFFLINE, inline=False)
         content = "⚠️ **Ping:** the monitored bot appears to be down."
     else:
         embed = discord.Embed(
@@ -509,7 +589,6 @@ async def notify_subscribers_of_global_status_change(new_status: str):
     ping_role="Optional: role to tag whenever the status changes",
     ping_user="Optional: user to tag whenever the status changes",
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def setup(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
@@ -560,13 +639,12 @@ async def setup(
 async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingPermissions):
         await interaction.response.send_message(
-            "❌ You need Administrator permissions to use this command.", ephemeral=True
+            "❌ An error occurred while checking permissions.", ephemeral=True
         )
 
 
 # --- 2. SLASH COMMAND: REMOVE SETUP ---
 @bot.tree.command(name="remove", description="Stop status tracking in this server and delete the embed message.")
-@app_commands.checks.has_permissions(administrator=True)
 async def remove(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
@@ -598,20 +676,25 @@ async def remove(interaction: discord.Interaction):
 async def remove_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingPermissions):
         await interaction.response.send_message(
-            "❌ You need Administrator permissions to use this command.", ephemeral=True
+            "❌ An error occurred while checking permissions.", ephemeral=True
         )
 
 
 # --- 3. SLASH COMMAND: MANUAL STATUS CHECK ---
 @bot.tree.command(name="status", description="Run an immediate status check, without waiting for the automatic loop.")
-@app_commands.checks.has_permissions(administrator=True)
-async def status(interaction: discord.Interaction):
+@app_commands.describe(
+    show_tips="Show admin tips when bot is offline"
+)
+async def status(interaction: discord.Interaction, show_tips: bool = False):
     await interaction.response.defer(ephemeral=True)
 
     label = current_status_label(interaction.guild)
     uptime_24h, samples = await asyncio.to_thread(db.get_uptime_stats, interaction.guild.id, 24)
 
-    embed = build_status_embed(interaction.guild, uptime_24h=uptime_24h)
+    # Show admin tips when bot is offline and user requested it
+    show_admin_tips = show_tips and label == "offline"
+    
+    embed = build_status_embed(interaction.guild, uptime_24h=uptime_24h, show_admin_tips=show_admin_tips)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
     # Also push the update to the tracked channel/message right away, if configured.
@@ -632,7 +715,7 @@ async def status(interaction: discord.Interaction):
 async def status_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingPermissions):
         await interaction.response.send_message(
-            "❌ You need Administrator permissions to use this command.", ephemeral=True
+            "❌ אירעה שגיאה בבדיקת ההרשאות.", ephemeral=True
         )
 
 
@@ -721,7 +804,83 @@ async def testdm(interaction: discord.Interaction):
         )
 
 
-# --- 7. PREFIX COMMAND: MODE UPDATE (BOT OWNER ONLY) ---
+# --- 7. SLASH COMMAND: GRANT PERMISSION (ADMIN ONLY) ---
+@bot.tree.command(
+    name="grantpermission",
+    description="Grant permission to a user to manage status tracking in this server."
+)
+@app_commands.describe(
+    user="The user to grant permission to",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def grantpermission(interaction: discord.Interaction, user: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+    
+    await asyncio.to_thread(db.grant_user_permission, user.id, interaction.guild.id)
+    
+    await interaction.followup.send(
+        f"✅ Granted permission to {user.mention} to manage status tracking in this server.",
+        ephemeral=True
+    )
+
+
+@grantpermission.error
+async def grantpermission_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need Administrator permissions to use this command.", ephemeral=True
+        )
+
+
+# --- 8. SLASH COMMAND: REVOKE PERMISSION (ADMIN ONLY) ---
+@bot.tree.command(
+    name="revokepermission",
+    description="Revoke permission from a user to manage status tracking in this server."
+)
+@app_commands.describe(
+    user="The user to revoke permission from",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def revokepermission(interaction: discord.Interaction, user: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+    
+    await asyncio.to_thread(db.revoke_user_permission, user.id, interaction.guild.id)
+    
+    await interaction.followup.send(
+        f"✅ Revoked permission from {user.mention} to manage status tracking in this server.",
+        ephemeral=True
+    )
+
+
+@revokepermission.error
+async def revokepermission_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need Administrator permissions to use this command.", ephemeral=True
+        )
+
+
+# --- 9. SLASH COMMAND: ADMIN TIPS (AVAILABLE TO ALL) ---
+@bot.tree.command(
+    name="admintips",
+    description="Show admin tips for managing the bot when it's offline."
+)
+async def admintips(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    embed = discord.Embed(
+        title="🔧 טיפים לניהול הבוט",
+        description=ADMIN_TIPS_OFFLINE,
+        color=discord.Color.blue(),
+        timestamp=discord.utils.utcnow(),
+    )
+    
+    embed.set_footer(text="These tips are always available, even when the bot is online.")
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# --- 9. PREFIX COMMAND: MODE UPDATE (BOT OWNER ONLY) ---
 @bot.command(name="modeupdate")
 @commands.is_owner()  # Strictly restricts this command to the Bot Creator/Owner
 async def mode_update(ctx, *, message: str = None):
@@ -740,7 +899,7 @@ async def mode_update(ctx, *, message: str = None):
             await asyncio.to_thread(db.set_setting, "maintenance_message", bot.maintenance_message)
             await asyncio.to_thread(db.set_setting, "update_mode", "yellow")
             
-            # Send ping message
+            # Send ping message with admin tips
             configs = await asyncio.to_thread(db.get_all_guild_configs)
             for guild_id, data in configs.items():
                 guild = bot.get_guild(guild_id)
@@ -751,7 +910,7 @@ async def mode_update(ctx, *, message: str = None):
                             mention = build_mention_string(data)
                             if mention:
                                 await channel.send(
-                                    f"{mention} ⚠️ **Update mode enabled** - Bot will return in 10 minutes",
+                                    f"{mention} ⚠️ **Update mode enabled** - Bot will return in 10 minutes\n\n{ADMIN_TIPS_OFFLINE}",
                                     allowed_mentions=discord.AllowedMentions(everyone=False, roles=True, users=True),
                                 )
                         except:
@@ -765,7 +924,7 @@ async def mode_update(ctx, *, message: str = None):
             await asyncio.to_thread(db.set_setting, "maintenance_message", message)
             await asyncio.to_thread(db.set_setting, "update_mode", "red")
             
-            # Send ping message
+            # Send ping message with admin tips
             configs = await asyncio.to_thread(db.get_all_guild_configs)
             for guild_id, data in configs.items():
                 guild = bot.get_guild(guild_id)
@@ -776,7 +935,7 @@ async def mode_update(ctx, *, message: str = None):
                             mention = build_mention_string(data)
                             if mention:
                                 await channel.send(
-                                    f"{mention} ⚠️ **Maintenance mode enabled** - {message}",
+                                    f"{mention} ⚠️ **Maintenance mode enabled** - {message}\n\n{ADMIN_TIPS_OFFLINE}",
                                     allowed_mentions=discord.AllowedMentions(everyone=False, roles=True, users=True),
                                 )
                         except:
@@ -859,7 +1018,10 @@ async def check_bot_status():
         try:
             label = current_status_label(guild)
             uptime_24h, _ = await asyncio.to_thread(db.get_uptime_stats, guild_id, 24)
-            embed = build_status_embed(guild, uptime_24h=uptime_24h)
+            
+            # Show admin tips in the embed when bot is offline
+            show_admin_tips = label == "offline"
+            embed = build_status_embed(guild, uptime_24h=uptime_24h, show_admin_tips=show_admin_tips)
             
             await message.edit(embed=embed)
             print(f"[status-check] Updated message in guild {guild_id}")
