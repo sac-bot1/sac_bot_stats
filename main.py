@@ -19,46 +19,76 @@ CHECK_INTERVAL_MINUTES = 1
 # How many history rows to keep before pruning old ones (per guild).
 HISTORY_RETENTION_DAYS = 30
 
-# Recommendations sent to subscribers' DMs whenever the monitored bot goes offline.
-OFFLINE_RECOMMENDATIONS = (
-    "• Check your hosting dashboard (Railway/VPS/etc.) for crash logs\n"
-    "• Verify the process wasn't OOM-killed or hit a CPU/memory limit\n"
-    "• Check the Discord API status page: https://discordstatus.com\n"
-    "• Confirm the bot's token hasn't been reset or revoked\n"
-    "• Check whether the host redeployed/restarted the service unexpectedly\n"
-    "• Restart the process manually if it isn't set to auto-restart"
+# Official announcement for when the monitored bot goes offline
+OFFLINE_ANNOUNCEMENT = (
+    "**📢 Official Announcement: System Status Update & Temporary Downtime**\n\n"
+    "Dear clients, administrators, and users,\n\n"
+    "We would like to inform you that our bot is currently experiencing a technical issue that prevents it from providing regular services. As a result, the bot is currently offline. Our development team is fully aware of the issue, actively investigating the root cause, and working diligently to bring the system back online as quickly as possible. We estimate that the issue will be fully resolved within the next **two hours**.\n\n"
+    "Since the bot plays a vital role in managing and securing your communities, we highly recommend that **server management teams** take the following temporary preventative measures to ensure your server's security remains intact while the bot is offline:\n\n"
+    "**1. Enable Discord AutoMod**\n"
+    "Navigate to your *Server Settings* > *Safety Setup* tab, and ensure that Discord's built-in filtration systems are active to block harmful links, spam, and offensive language.\n\n"
+    "**2. Raise Verification Level**\n"
+    "We recommend temporarily raising your server's verification level to **High** (requires being a Discord member for more than 5 minutes) or **Highest** (requires a verified phone number). This will prevent alt accounts and spam bots from entering while server defenses are lowered.\n\n"
+    "**3. Restrict Global Permissions**\n"
+    "Please ensure that sensitive permissions for the base role (`@everyone`) are temporarily disabled in public channels. This includes *Attach Files*, *Embed Links*, and global mentions (*Mention @everyone / @here*).\n\n"
+    "**4. Activate Slowmode**\n"
+    "In busy and central chat channels, we advise setting a Slowmode cooldown of **5 to 10 seconds** to moderate the chat pace and prevent raid or spam attempts.\n\n"
+    "For our general **members**, we kindly ask for your patience. Please avoid repeatedly spamming bot commands during this time. The system will update automatically and resume responding immediately once the maintenance is complete.\n\n"
+    "For further questions, assistance, or to track real-time status updates, you are welcome to join our official support server: 🔗 https://discord.gg/54HxKqTbTY\n\n"
+    "We sincerely apologize for the temporary inconvenience and thank you for your understanding and cooperation.\n\n"
+    "— The Management & Development Team"
 )
 
-# Enhanced tips for users when bot is offline
+# Enhanced administrative guidance when bot is offline
 ADMIN_TIPS_OFFLINE = (
-    "🔧 **What to do when the bot is offline?**\n\n"
-    "1. **Check the hosting platform:**\n"
-    "   - Log into your hosting dashboard (Railway/VPS/etc.)\n"
-    "   - Look for crash logs or error messages\n"
-    "   - Check if there are memory or CPU limit issues\n\n"
-    "2. **How to stop the server:**\n"
-    "   - On Railway: Click 'Stop' in the project\n"
-    "   - On VPS: Use command `sudo systemctl stop <service-name>`\n"
-    "   - Or Ctrl+C if running manually\n\n"
-    "3. **What to update:**\n"
-    "   - Update library versions\n"
-    "   - Check for security updates\n"
-    "   - Clear cache and temporary files\n\n"
-    "4. **How to restart:**\n"
-    "   - On Railway: Click 'Redeploy'\n"
-    "   - On VPS: `sudo systemctl restart <service-name>`\n"
-    "   - Or run the script again\n\n"
-    "5. **Basic checks:**\n"
-    "   - Verify the bot token is valid\n"
-    "   - Ensure the bot is on the correct server\n"
-    "   - Check intent settings"
+    "🔧 **Temporary Preventative Measures for Server Administrators:**\n\n"
+    "To ensure your server's security remains intact while the bot is offline, we recommend the following steps:\n\n"
+    "**1. Enable Discord AutoMod**\n"
+    "   - Navigate to *Server Settings* > *Safety Setup*\n"
+    "   - Ensure Discord's built-in filtration systems are active\n"
+    "   - This will block harmful links, spam, and offensive language\n\n"
+    "**2. Raise Verification Level**\n"
+    "   - Set to **High** (requires being a Discord member for 5+ minutes)\n"
+    "   - Or **Highest** (requires a verified phone number)\n"
+    "   - This prevents alt accounts and spam bots from entering\n\n"
+    "**3. Restrict Global Permissions**\n"
+    "   - Disable sensitive permissions for the `@everyone` role\n"
+    "   - Disable: *Attach Files*, *Embed Links*, and global mentions\n\n"
+    "**4. Activate Slowmode**\n"
+    "   - In busy channels, set Slowmode to **5-10 seconds**\n"
+    "   - This moderates chat pace and prevents raid/spam attempts\n\n"
+    "For further assistance, join our support server: 🔗 https://discord.gg/54HxKqTbTY"
 )
 
-# Sent alongside the "back online" DM, so subscribers get a suggestion every time too.
+# Short recommended-steps field used inside the DM sent to subscribers when
+# the bot goes offline (server admins & members — not developer-facing).
+OFFLINE_RECOMMENDATIONS = (
+    "**For server admins:** temporarily raise your verification level, turn on AutoMod, "
+    "restrict `@everyone` permissions (file uploads, embeds, mentions), and consider "
+    "Slowmode in busy channels until the bot is back.\n\n"
+    "**For members:** please be patient and avoid spamming bot commands — everything "
+    "will resume automatically once the issue is resolved."
+)
+
+# Message for when the bot comes back online
+ONLINE_ANNOUNCEMENT = (
+    "**✅ System Status: Back Online**\n\n"
+    "We're pleased to inform you that the issue has been fully resolved and our bot is now back online and operational. Regular services have resumed.\n\n"
+    "**For Server Administrators:** You can now revert the temporary preventative measures you put in place:\n"
+    "   - Disable Slowmode in your channels\n"
+    "   - Restore the original permission settings for `@everyone`\n"
+    "   - Lower verification level back to your preferred setting (if you raised it temporarily)\n\n"
+    "Thank you for your patience and cooperation during this downtime. If you have any questions, please visit our support server: 🔗 https://discord.gg/54HxKqTbTY"
+)
+
+# Short "next steps" field used inside the DM sent to subscribers when the
+# bot comes back online (server admins & members — not developer-facing).
 ONLINE_TIPS = (
-    "• No action needed if you expected this (manual restart, redeploy, etc.)\n"
-    "• If this was unexpected, check the crash logs from just before it recovered\n"
-    "• Worth keeping an eye on it for a bit in case it's flapping (going up/down repeatedly)"
+    "**For server admins:** you can now revert any temporary measures — disable Slowmode, "
+    "restore your normal `@everyone` permissions, and lower the verification level back to "
+    "your usual setting.\n\n"
+    "**For members:** regular bot commands and features are working again — thanks for "
+    "your patience!"
 )
 
 
@@ -503,14 +533,30 @@ TRANSITION_TEXT = {
 
 
 async def notify_status_change(channel: discord.abc.Messageable, config: dict, new_status: str):
-    """Sends a separate ping message (if a role/user is configured) when status changes."""
+    """
+    Sends the ping message when status changes. For offline/online transitions
+    this is the full OFFLINE_ANNOUNCEMENT / ONLINE_ANNOUNCEMENT text (sent as an
+    embed, since OFFLINE_ANNOUNCEMENT is longer than Discord's 2000-character
+    plain-message limit); any other transition (e.g. maintenance) falls back to
+    the short TRANSITION_TEXT line.
+    """
     mention = build_mention_string(config)
-    text = TRANSITION_TEXT.get(new_status, f"Status changed to **{new_status}**.")
-    if mention:
-        text = f"{mention} {text}"
+
+    if new_status == "offline":
+        embed = discord.Embed(description=OFFLINE_ANNOUNCEMENT, color=discord.Color.red())
+        content = mention
+    elif new_status == "online":
+        embed = discord.Embed(description=ONLINE_ANNOUNCEMENT, color=discord.Color.green())
+        content = mention
+    else:
+        embed = None
+        text = TRANSITION_TEXT.get(new_status, f"Status changed to **{new_status}**.")
+        content = f"{mention} {text}" if mention else text
+
     try:
         await channel.send(
-            text,
+            content=content,
+            embed=embed,
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=True, users=True),
         )
     except discord.Forbidden:
